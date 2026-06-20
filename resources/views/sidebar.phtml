@@ -1,0 +1,184 @@
+<?php
+
+declare(strict_types=1);
+
+use Fisharebest\Webtrees\I18N;
+use Fisharebest\Webtrees\Individual;
+
+/**
+ * Individual-page panel: relationship-to-you + a one-click birthday follow.
+ *
+ * Rendered by getSidebarContent (webtrees' only individual-page render hook with
+ * the person in context). The inline script then PROMOTES this card out of the
+ * collapsible sidebar into a prominent, always-visible card in the main column,
+ * directly under the photo/name block, and drops the now-empty sidebar item.
+ * If the script can't find its anchors (template change / JS off) the card
+ * simply stays in the sidebar — graceful degradation, never a broken page.
+ *
+ * @var Individual $individual
+ * @var bool       $is_self       the viewer is looking at their own profile
+ * @var bool       $is_following  viewer already follows this birthday
+ * @var string     $relationship  localised label ("daughter"); '' if none/self
+ * @var string     $relationship_url  link to the full "Relationships" chart (viewer → this person); '' if self/unavailable
+ * @var string     $birthday      e.g. "🎂 17 Feb (1 year old in 244 days)"; '' if unknown
+ * @var string     $action_url    POST endpoint (follow / unfollow)
+ * @var string     $manage_url    link to the full reminder-settings page
+ * @var string     $csrf          CSRF token
+ */
+
+?>
+
+<div id="wt-follow-sidebar"
+     data-csrf="<?= e($csrf) ?>"
+     data-action-url="<?= e($action_url) ?>"
+     data-xref="<?= e($individual->xref()) ?>">
+
+    <?php if ($is_self) : ?>
+        <p class="text-muted mb-0"><?= e(I18N::translate('This is your own profile.')) ?></p>
+    <?php else : ?>
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <div class="flex-grow-1">
+                <?php if ($relationship !== '') : ?>
+                    <div class="text-muted small text-uppercase"><?= e(I18N::translate('Relationship to you')) ?></div>
+                    <div class="h4 mb-0"><?= e(mb_strtoupper(mb_substr($relationship, 0, 1)) . mb_substr($relationship, 1)) ?></div>
+                <?php endif ?>
+
+                <?php if ($birthday !== '') : ?>
+                    <div class="mt-1"><?= e($birthday) ?></div>
+                <?php endif ?>
+
+                <?php if ($relationship_url !== '') : ?>
+                    <div class="mt-2">
+                        <a href="<?= e($relationship_url) ?>" class="btn btn-sm btn-outline-secondary">
+                            <?= e(I18N::translate('Show full relationship')) ?>
+                        </a>
+                    </div>
+                <?php endif ?>
+            </div>
+
+            <div class="text-nowrap">
+                <button type="button" id="wt-follow-btn"
+                        class="btn btn-sm <?= $is_following ? 'btn-outline-success' : 'btn-primary' ?>"
+                        data-following="<?= $is_following ? '1' : '0' ?>"
+                        data-label-follow="<?= e(I18N::translate('Remind me of this birthday')) ?>"
+                        data-label-following="<?= e(I18N::translate('Stop reminding me')) ?>">
+                    <?= $is_following ? '★ ' . e(I18N::translate('Stop reminding me')) : '☆ ' . e(I18N::translate('Remind me of this birthday')) ?>
+                </button>
+                <div id="wt-follow-status" class="small text-success mt-1"<?= $is_following ? '' : ' hidden' ?>>
+                    <?= e(I18N::translate('You will be reminded of this birthday.')) ?>
+                </div>
+            </div>
+        </div>
+    <?php endif ?>
+
+    <?php if (($bio ?? '') !== '') : ?>
+        <div class="mt-3 pt-3 border-top wt-famous-bio">
+            <p class="mb-1"><?= e($bio) ?></p>
+            <?php if (($wiki ?? '') !== '') : ?>
+                <a href="<?= e($wiki) ?>" target="_blank" rel="nofollow noopener">Wikipedia &rarr;</a>
+            <?php endif ?>
+        </div>
+    <?php endif ?>
+
+    <div class="mt-2">
+        <a href="<?= e($manage_url) ?>" class="small"><?= e(I18N::translate('Manage all reminders')) ?></a>
+    </div>
+</div>
+
+<script>
+(function () {
+    var root = document.getElementById('wt-follow-sidebar');
+    if (!root || root.dataset.bound) {
+        return;
+    }
+    root.dataset.bound = '1';
+
+    // --- 1. Wire up the follow / unfollow toggle ------------------------------
+    var btn = document.getElementById('wt-follow-btn');
+    if (btn) {
+        var status = document.getElementById('wt-follow-status');
+
+        btn.addEventListener('click', function () {
+            var following = btn.dataset.following === '1';
+            var action    = following ? 'unfollow' : 'follow';
+
+            btn.disabled = true;
+
+            var body = 'action=' + encodeURIComponent(action)
+                     + '&target=' + encodeURIComponent(root.dataset.xref)
+                     + '&ajax=1';
+
+            fetch(root.dataset.actionUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'X-CSRF-TOKEN': root.dataset.csrf,
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: body,
+                credentials: 'same-origin'
+            }).then(function (r) {
+                return r.json();
+            }).then(function (data) {
+                if (!data || data.ok !== true) {
+                    throw new Error('unexpected response');
+                }
+                var now = !following;
+                btn.dataset.following = now ? '1' : '0';
+                btn.classList.toggle('btn-primary', !now);
+                btn.classList.toggle('btn-outline-success', now);
+                btn.textContent = (now ? '★ ' + btn.dataset.labelFollowing : '☆ ' + btn.dataset.labelFollow);
+                if (status) {
+                    status.hidden = !now;
+                }
+            }).catch(function () {
+                btn.classList.add('btn-outline-danger');
+                setTimeout(function () { btn.classList.remove('btn-outline-danger'); }, 1500);
+            }).then(function () {
+                btn.disabled = false;
+            });
+        });
+    }
+
+    // --- 2. Promote the card into the main column (prominent + always visible)-
+    // webtrees renders this inside the collapsible right-hand sidebar. Move it
+    // up under the photo/name block so it's seen without expanding anything.
+    function promote() {
+        if (root.dataset.promoted) {
+            return;
+        }
+
+        var outerRow = root.closest('.row');
+        var mainCol  = outerRow ? outerRow.querySelector('.col-sm-8') : null;
+        var headerRow = mainCol ? mainCol.querySelector('.row.mb-4') : null;
+
+        if (!headerRow) {
+            return; // anchors not found — leave the card safely in the sidebar
+        }
+
+        root.dataset.promoted = '1';
+
+        var item = root.closest('.accordion-item');
+
+        var wrapper = document.createElement('div');
+        wrapper.className = 'card border-primary shadow-sm mb-4 wt-reminders-card';
+
+        var bodyDiv = document.createElement('div');
+        bodyDiv.className = 'card-body py-3';
+        bodyDiv.appendChild(root); // move the live node (listeners come with it)
+
+        wrapper.appendChild(bodyDiv);
+        headerRow.insertAdjacentElement('afterend', wrapper);
+
+        if (item) {
+            item.remove(); // drop the now-empty "Reminders" accordion item
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', promote);
+    } else {
+        promote();
+    }
+})();
+</script>

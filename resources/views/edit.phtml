@@ -1,0 +1,410 @@
+<?php
+
+declare(strict_types=1);
+
+use Fisharebest\Webtrees\I18N;
+use Fisharebest\Webtrees\Module\RemindersModule;
+use Fisharebest\Webtrees\Tree;
+
+/**
+ * @var string                   $title
+ * @var Tree                     $tree
+ * @var bool                     $linked
+ * @var array<string,mixed>|null $subscription
+ * @var array<int,array{xref:string,name:string,lifespan:string,url:string}> $following
+ * @var string                   $search_url
+ * @var array<int,array<string,mixed>> $upcoming
+ * @var int                      $horizon_days
+ */
+
+$action_url = route(RemindersModule::class, ['tree' => $tree->name()]);
+
+$subscribed       = $subscription !== null;
+$days_ahead       = (int) ($subscription['days_ahead'] ?? 2);
+$max_distance     = (int) ($subscription['max_distance'] ?? 0);
+$include_deceased = (bool) ($subscription['include_deceased'] ?? false);
+
+$following    = $following ?? [];
+$search_url   = $search_url ?? '';
+$upcoming     = $upcoming ?? [];
+$horizon_days = (int) ($horizon_days ?? 31);
+
+$distance_options = [
+    0  => I18N::translate('Unlimited'),
+    1  => '1 — ' . I18N::translate('Children, parents and siblings'),
+    2  => '2 — ' . I18N::translate('Grandparents/children, aunts/uncles'),
+    3  => '3 — ' . I18N::translate('First cousins (incl. spouses)'),
+    4  => '4 — ' . I18N::translate('First cousins and their children'),
+    5  => '5 — ' . I18N::translate('Second cousins (incl. spouses)'),
+    6  => '6 — ' . I18N::translate('Second cousins and their children'),
+    7  => '7 — ' . I18N::translate('Third cousins (incl. spouses)'),
+    8  => '8 — ' . I18N::translate('Third cousins and their children'),
+    9  => '9 — ' . I18N::translate('Fourth cousins (incl. spouses)'),
+    10 => '10 — ' . I18N::translate('Fourth cousins and their children'),
+];
+?>
+
+<h1><?= e($title) ?></h1>
+
+<?php if (!$linked) : ?>
+    <div class="alert alert-warning">
+        <?= I18N::translate('Your account is not linked to a person in this family tree, so birthday reminders cannot be set up. Please ask an administrator to link your account.') ?>
+    </div>
+<?php else : ?>
+    <?php if ($subscribed) : ?>
+        <p class="text-success"><?= I18N::translate('You are subscribed to birthday reminders.') ?></p>
+    <?php else : ?>
+        <p class="text-muted"><?= I18N::translate('You are not currently subscribed to birthday reminders.') ?></p>
+    <?php endif ?>
+
+    <form method="post" action="<?= e($action_url) ?>">
+        <?= csrf_field() ?>
+
+        <div class="row mb-3">
+            <label class="col-sm-3 col-form-label" for="days_ahead">
+                <?= I18N::translate('Days ahead') ?>
+            </label>
+            <div class="col-sm-9">
+                <select class="form-select" id="days_ahead" name="days_ahead">
+                    <?php for ($d = 1; $d <= 7; $d++) : ?>
+                        <option value="<?= $d ?>" <?= $d === $days_ahead ? 'selected' : '' ?>><?= $d ?></option>
+                    <?php endfor ?>
+                </select>
+            </div>
+        </div>
+
+        <div class="row mb-3">
+            <label class="col-sm-3 col-form-label" for="max_distance">
+                <?= I18N::translate('Maximum distance to relative') ?>
+            </label>
+            <div class="col-sm-9">
+                <select class="form-select" id="max_distance" name="max_distance">
+                    <?php foreach ($distance_options as $value => $label) : ?>
+                        <option value="<?= $value ?>" <?= $value === $max_distance ? 'selected' : '' ?>>
+                            <?= e($label) ?>
+                        </option>
+                    <?php endforeach ?>
+                </select>
+            </div>
+        </div>
+
+        <div class="row mb-3">
+            <div class="col-sm-9 offset-sm-3">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="include_deceased" name="include_deceased" value="1" <?= $include_deceased ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="include_deceased">
+                        <?= I18N::translate('Include birthdays of deceased people') ?>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-sm-9 offset-sm-3">
+                <button type="submit" name="action" value="subscribe" class="btn btn-primary">
+                    <?= $subscribed ? I18N::translate('Save') : I18N::translate('Subscribe') ?>
+                </button>
+                <?php if ($subscribed) : ?>
+                    <button type="submit" name="action" value="unsubscribe" class="btn btn-outline-danger ms-2">
+                        <?= I18N::translate('Unsubscribe') ?>
+                    </button>
+                <?php endif ?>
+            </div>
+        </div>
+    </form>
+
+    <?php
+    // --- People you follow ------------------------------------------------
+    // Individually-followed birthdays appear in the digest no matter how
+    // distant the relative is — independent of the "Maximum distance" filter.
+    ?>
+    <hr class="my-4">
+
+    <div id="wt-reminder-follow"
+         data-search-url="<?= e($search_url) ?>"
+         data-action-url="<?= e($action_url) ?>"
+         data-csrf="<?= e(csrf_token()) ?>">
+
+        <h2 class="h4"><?= e(I18N::translate('People you follow')) ?></h2>
+        <p class="text-muted"><?= e(I18N::translate('Always remind me of these birthdays, no matter how distant the relative.')) ?></p>
+
+        <div class="row mb-3">
+            <div class="col-sm-9 offset-sm-3 position-relative">
+                <input type="search" class="form-control" id="wt-reminder-search" autocomplete="off"
+                       placeholder="<?= e(I18N::translate('Search for a person by name')) ?>"
+                       aria-label="<?= e(I18N::translate('Search for a person by name')) ?>">
+                <ul id="wt-reminder-results" class="list-group position-absolute w-100 shadow-sm"
+                    style="z-index: 1000; max-height: 320px; overflow-y: auto;"></ul>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-sm-9 offset-sm-3">
+                <ul id="wt-reminder-following" class="list-group">
+                    <?php if ($following === []) : ?>
+                        <li class="list-group-item text-muted" data-empty="1">
+                            <?= e(I18N::translate('You are not following anyone yet.')) ?>
+                        </li>
+                    <?php else : ?>
+                        <?php foreach ($following as $person) : ?>
+                            <li class="list-group-item d-flex justify-content-between align-items-center" data-xref="<?= e($person['xref']) ?>">
+                                <span>
+                                    <a href="<?= e($person['url']) ?>"><?= e($person['name']) ?></a>
+                                    <?php if ($person['lifespan'] !== '') : ?>
+                                        <small class="text-muted ms-1"><?= e($person['lifespan']) ?></small>
+                                    <?php endif ?>
+                                    <?php if (($person['birthday'] ?? '') !== '') : ?>
+                                        <br><small class="text-muted"><?= e($person['birthday']) ?></small>
+                                    <?php endif ?>
+                                </span>
+                                <button type="button" class="btn btn-sm btn-outline-danger wt-reminder-remove" data-xref="<?= e($person['xref']) ?>">
+                                    <?= e(I18N::translate('Remove')) ?>
+                                </button>
+                            </li>
+                        <?php endforeach ?>
+                    <?php endif ?>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <?php
+    // --- Upcoming birthdays (next month) ----------------------------------
+    // A read-only preview of who the daily digest would mention over the next
+    // month, using the SAME selection rules as the email (distance filter +
+    // followed people + the deceased rule). Grouped by date for easy scanning.
+    ?>
+    <hr class="my-4">
+
+    <div id="wt-reminder-upcoming">
+        <h2 class="h4"><?= e(I18N::translate('Upcoming birthdays')) ?></h2>
+        <p class="text-muted"><?= e(I18N::translate('Birthdays in the next month, based on your settings above.')) ?></p>
+
+        <div class="row">
+            <div class="col-sm-9 offset-sm-3">
+                <?php if ($upcoming === []) : ?>
+                    <p class="text-muted mb-0"><?= e(I18N::translate('No upcoming birthdays in the next month.')) ?></p>
+                <?php else : ?>
+                    <ul class="list-group">
+                        <?php $current_day = null; ?>
+                        <?php foreach ($upcoming as $person) : ?>
+                            <?php if ($person['date_label'] !== $current_day) : ?>
+                                <?php $current_day = $person['date_label']; ?>
+                                <li class="list-group-item d-flex justify-content-between align-items-center bg-body-secondary">
+                                    <span class="fw-bold"><?= e($person['date_label']) ?></span>
+                                    <small class="text-muted">
+                                        <?php if ((int) $person['days'] === 0) : ?>
+                                            <?= e(I18N::translate('today')) ?>
+                                        <?php elseif ((int) $person['days'] === 1) : ?>
+                                            <?= e(I18N::translate('tomorrow')) ?>
+                                        <?php else : ?>
+                                            <?= e(I18N::translate('in %s days', I18N::number((int) $person['days']))) ?>
+                                        <?php endif ?>
+                                    </small>
+                                </li>
+                            <?php endif ?>
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                <span>
+                                    🎂 <a href="<?= e($person['url']) ?>"><?= e($person['name']) ?></a>
+                                    <?php if (!empty($person['deceased'])) : ?>
+                                        <span class="text-muted" title="<?= e(I18N::translate('Deceased')) ?>">✝</span>
+                                    <?php endif ?>
+                                    <?php if (($person['relationship'] ?? '') !== '') : ?>
+                                        <br><small class="text-muted ms-4"><?= e($person['relationship']) ?></small>
+                                    <?php endif ?>
+                                </span>
+                                <span class="text-end ms-2 text-nowrap">
+                                    <?php if (!empty($person['followed'])) : ?>
+                                        <span class="badge bg-success">&#9733; <?= e(I18N::translate('Followed')) ?></span>
+                                    <?php endif ?>
+                                    <?php if ($person['age'] !== null) : ?>
+                                        <small class="text-muted ms-1"><?= e((int) $person['age'] === 1 ? I18N::translate('%s year old', I18N::number((int) $person['age'])) : I18N::translate('%s years old', I18N::number((int) $person['age']))) ?></small>
+                                    <?php endif ?>
+                                </span>
+                            </li>
+                        <?php endforeach ?>
+                    </ul>
+                <?php endif ?>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        var root = document.getElementById('wt-reminder-follow');
+        if (!root) {
+            return;
+        }
+
+        var searchUrl  = root.dataset.searchUrl;
+        var actionUrl  = root.dataset.actionUrl;
+        var csrf       = root.dataset.csrf;
+        var searchBox  = document.getElementById('wt-reminder-search');
+        var resultsEl  = document.getElementById('wt-reminder-results');
+        var followList = document.getElementById('wt-reminder-following');
+
+        var T = {
+            follow:    <?= json_encode(I18N::translate('Follow')) ?>,
+            following: <?= json_encode(I18N::translate('Following')) ?>,
+            remove:    <?= json_encode(I18N::translate('Remove')) ?>,
+            empty:     <?= json_encode(I18N::translate('You are not following anyone yet.')) ?>,
+            none:      <?= json_encode(I18N::translate('No matches found.')) ?>
+        };
+
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s == null ? '' : s;
+            return d.innerHTML;
+        }
+
+        function clearResults() {
+            resultsEl.innerHTML = '';
+        }
+
+        // POST a follow/unfollow and re-render the "following" list from the
+        // server's authoritative response.
+        function mutate(action, xref) {
+            var body = 'action=' + encodeURIComponent(action)
+                     + '&target=' + encodeURIComponent(xref)
+                     + '&ajax=1';
+
+            return fetch(actionUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'X-CSRF-TOKEN': csrf,
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: body,
+                credentials: 'same-origin'
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                if (data && data.following) {
+                    renderFollowing(data.following);
+                }
+                return data;
+            });
+        }
+
+        function renderFollowing(list) {
+            followList.innerHTML = '';
+
+            if (!list || list.length === 0) {
+                var li = document.createElement('li');
+                li.className = 'list-group-item text-muted';
+                li.dataset.empty = '1';
+                li.textContent = T.empty;
+                followList.appendChild(li);
+                return;
+            }
+
+            list.forEach(function (p) {
+                var li = document.createElement('li');
+                li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                li.dataset.xref = p.xref;
+
+                var span = '<a href="' + esc(p.url) + '">' + esc(p.name) + '</a>';
+                if (p.lifespan) {
+                    span += ' <small class="text-muted ms-1">' + esc(p.lifespan) + '</small>';
+                }
+                if (p.birthday) {
+                    span += '<br><small class="text-muted">' + esc(p.birthday) + '</small>';
+                }
+
+                li.innerHTML = '<span>' + span + '</span>'
+                    + '<button type="button" class="btn btn-sm btn-outline-danger wt-reminder-remove" data-xref="'
+                    + esc(p.xref) + '">' + esc(T.remove) + '</button>';
+                followList.appendChild(li);
+            });
+        }
+
+        function renderResults(results) {
+            resultsEl.innerHTML = '';
+
+            if (!results || results.length === 0) {
+                var li = document.createElement('li');
+                li.className = 'list-group-item text-muted';
+                li.textContent = T.none;
+                resultsEl.appendChild(li);
+                return;
+            }
+
+            results.forEach(function (p) {
+                var li = document.createElement('li');
+                li.className = 'list-group-item d-flex justify-content-between align-items-center';
+
+                var span = esc(p.name);
+                if (p.lifespan) {
+                    span += ' <small class="text-muted ms-1">' + esc(p.lifespan) + '</small>';
+                }
+                if (p.birthday) {
+                    span += '<br><small class="text-muted">' + esc(p.birthday) + '</small>';
+                }
+
+                var btn;
+                if (p.following) {
+                    btn = '<span class="badge bg-success">&#9733; ' + esc(T.following) + '</span>';
+                } else {
+                    btn = '<button type="button" class="btn btn-sm btn-outline-primary wt-reminder-add" data-xref="'
+                        + esc(p.xref) + '">' + esc(T.follow) + '</button>';
+                }
+
+                li.innerHTML = '<span>' + span + '</span>' + btn;
+                resultsEl.appendChild(li);
+            });
+        }
+
+        var timer = null;
+        searchBox.addEventListener('input', function () {
+            var q = searchBox.value.trim();
+            if (timer) {
+                clearTimeout(timer);
+            }
+            if (q.length < 2) {
+                clearResults();
+                return;
+            }
+            timer = setTimeout(function () {
+                fetch(searchUrl + '&q=' + encodeURIComponent(q), {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    credentials: 'same-origin'
+                }).then(function (r) { return r.json(); }).then(function (data) {
+                    renderResults(data && data.results ? data.results : []);
+                }).catch(clearResults);
+            }, 250);
+        });
+
+        // Follow from a search result: mark it followed in place, refresh list.
+        resultsEl.addEventListener('click', function (ev) {
+            var btn = ev.target.closest('.wt-reminder-add');
+            if (!btn) {
+                return;
+            }
+            var xref = btn.dataset.xref;
+            btn.disabled = true;
+            mutate('follow', xref).then(function () {
+                var badge = document.createElement('span');
+                badge.className = 'badge bg-success';
+                badge.innerHTML = '&#9733; ' + esc(T.following);
+                btn.replaceWith(badge);
+            });
+        });
+
+        // Remove from the following list.
+        followList.addEventListener('click', function (ev) {
+            var btn = ev.target.closest('.wt-reminder-remove');
+            if (!btn) {
+                return;
+            }
+            btn.disabled = true;
+            mutate('unfollow', btn.dataset.xref);
+        });
+
+        // Hide the dropdown when clicking away.
+        document.addEventListener('click', function (ev) {
+            if (!root.contains(ev.target)) {
+                clearResults();
+            }
+        });
+    })();
+    </script>
+<?php endif ?>
